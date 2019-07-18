@@ -110,7 +110,7 @@
 			var materials = parseMaterials( FBXTree, textures, connections );
 			var deformers = parseDeformers( FBXTree, connections );
 			var geometryMap = parseGeometries( FBXTree, connections, deformers );
-			var sceneGraph = parseScene( FBXTree, connections, deformers, geometryMap, materials );
+			var sceneGraph = parseScene( FBXTree, connections, deformers.skeletons, geometryMap, materials );
 
 			return sceneGraph;
 
@@ -371,7 +371,7 @@
 
 		var texture;
 
-		if ( textureNode.FileName.slice( - 3 ).toLowerCase() === 'tga' ) {
+		if ( textureNode.FileName.slice( -3 ).toLowerCase() === 'tga' ) {
 
  			texture = THREE.Loader.Handlers.get( '.tga' ).load( fileName );
 
@@ -419,7 +419,7 @@
 		var name = materialNode.attrName;
 		var type = materialNode.ShadingModel;
 
-		// Case where FBX wraps shading model in property object.
+		//Case where FBX wraps shading model in property object.
 		if ( typeof type === 'object' ) {
 
 			type = type.value;
@@ -633,10 +633,11 @@
 						id: nodeID,
 					};
 
-					morphTarget.rawTargets = parseMorphTargets( relationships, DeformerNodes, connections );
+					morphTarget.rawTargets = parseMorphTargets( relationships, deformerNode, DeformerNodes, connections );
 					morphTarget.id = nodeID;
 
 					if ( relationships.parents.length > 1 ) console.warn( 'THREE.FBXLoader: morph target attached to more than one geometry is not supported.' );
+					morphTarget.parentGeoID = relationships.parents[ 0 ].ID;
 
 					morphTargets[ nodeID ] = morphTarget;
 
@@ -700,7 +701,7 @@
 	}
 
 	// The top level morph deformer node has type "BlendShape" and sub nodes have type "BlendShapeChannel"
-	function parseMorphTargets( relationships, deformerNodes, connections ) {
+	function parseMorphTargets( relationships, deformerNode, deformerNodes, connections ) {
 
 		var rawMorphTargets = [];
 
@@ -733,7 +734,18 @@
 
 			targetRelationships.children.forEach( function ( child ) {
 
-				if ( child.relationship === undefined ) rawMorphTarget.geoID = child.ID;
+				if ( child.relationship === 'DeformPercent' ) {
+
+					// TODO: animation of morph targets is currently unsupported
+					rawMorphTarget.weightCurveID = child.ID;
+					// weightCurve = FBXTree.Objects.AnimationCurveNode[ weightCurveID ];
+
+				} else {
+
+					rawMorphTarget.geoID = child.ID;
+					// morphGeo = FBXTree.Objects.Geometry[ geoID ];
+
+				}
 
 			} );
 
@@ -1614,11 +1626,11 @@
 	}
 
 	// create the main THREE.Group() to be returned by the loader
-	function parseScene( FBXTree, connections, deformers, geometryMap, materialMap ) {
+	function parseScene( FBXTree, connections, skeletons, geometryMap, materialMap ) {
 
 		var sceneGraph = new THREE.Group();
 
-		var modelMap = parseModels( FBXTree, deformers.skeletons, geometryMap, materialMap, connections );
+		var modelMap = parseModels( FBXTree, skeletons, geometryMap, materialMap, connections );
 
 		var modelNodes = FBXTree.Objects.Model;
 
@@ -1645,49 +1657,13 @@
 
 		} );
 
-		bindSkeleton( FBXTree, deformers.skeletons, geometryMap, modelMap, connections );
+		bindSkeleton( FBXTree, skeletons, geometryMap, modelMap, connections );
+
 		addAnimations( FBXTree, connections, sceneGraph );
+
 		createAmbientLight( FBXTree, sceneGraph );
 
-		setupMorphMaterials( sceneGraph );
-
 		return sceneGraph;
-
-	}
-
-	function setupMorphMaterials( sceneGraph ) {
-
-		sceneGraph.traverse( function ( child ) {
-
-			if ( child.isMesh ) {
-
-				if ( child.geometry.morphAttributes.position || child.geometry.morphAttributes.normal ) {
-
-					var uuid = child.uuid;
-					var matUuid = child.material.uuid;
-
-					// if a geometry has morph targets, it cannot share the material with other geometries
-					var sharedMat = false;
-
-					sceneGraph.traverse( function ( child ) {
-
-						if ( child.isMesh ) {
-
-							if ( child.material.uuid === matUuid && child.uuid !== uuid ) sharedMat = true;
-
-						}
-
-					} );
-
-					if ( sharedMat === true ) child.material = child.material.clone();
-
-					child.material.morphTargets = true;
-
-				}
-
-			}
-
-		} );
 
 	}
 
@@ -2297,6 +2273,7 @@
 		var curveNodesMap = parseAnimationCurveNodes( FBXTree );
 
 		parseAnimationCurves( FBXTree, connections, curveNodesMap );
+
 		var layersMap = parseAnimationLayers( FBXTree, connections, curveNodesMap );
 		var rawClips = parseAnimStacks( FBXTree, connections, layersMap );
 
@@ -2317,7 +2294,7 @@
 
 			var rawCurveNode = rawCurveNodes[ nodeID ];
 
-			if ( rawCurveNode.attrName.match( /S|R|T|DeformPercent/ ) !== null ) {
+			if ( rawCurveNode.attrName.match( /S|R|T/ ) !== null ) {
 
 				var curveNode = {
 
@@ -2343,13 +2320,6 @@
 	function parseAnimationCurves( FBXTree, connections, curveNodesMap ) {
 
 		var rawCurves = FBXTree.Objects.AnimationCurve;
-
-		// TODO: Many values are identical up to roundoff error, but won't be optimised
-		// e.g. position times: [0, 0.4, 0. 8]
-		// position values: [7.23538335023477e-7, 93.67518615722656, -0.9982695579528809, 7.23538335023477e-7, 93.67518615722656, -0.9982695579528809, 7.235384487103147e-7, 93.67520904541016, -0.9982695579528809]
-		// clearly, this should be optimised to
-		// times: [0], positions [7.23538335023477e-7, 93.67518615722656, -0.9982695579528809]
-		// this shows up in nearly every FBX file, and generally time array is length > 100
 
 		for ( var nodeID in rawCurves ) {
 
@@ -2379,10 +2349,6 @@
 				} else if ( animationCurveRelationship.match( /Z/ ) ) {
 
 					curveNodesMap.get( animationCurveID ).curves[ 'z' ] = animationCurve;
-
-				} else if ( animationCurveRelationship.match( /d|DeformPercent/ ) ) {
-
-					curveNodesMap.get( animationCurveID ).curves[ 'morph' ] = animationCurve;
 
 				}
 
@@ -2458,40 +2424,9 @@
 
 							layerCurveNodes[ i ][ curveNode.attr ] = curveNode;
 
-						} else if ( curveNode.curves.morph !== undefined ) {
-
-							if ( layerCurveNodes[ i ] === undefined ) {
-
-								var deformerID;
-
-								connections.get( child.ID ).parents.forEach( function ( parent ) {
-
-									if ( parent.relationship !== undefined ) deformerID = parent.ID;
-
-								} );
-
-								var morpherID = connections.get( deformerID ).parents[ 0 ].ID;
-								var geoID = connections.get( morpherID ).parents[ 0 ].ID;
-
-								// assuming geometry is not used in more than one model
-								var modelID = connections.get( geoID ).parents[ 0 ].ID;
-
-								var rawModel = FBXTree.Objects.Model[ modelID ];
-
-								var node = {
-
-									modelName: THREE.PropertyBinding.sanitizeNodeName( rawModel.attrName ),
-									morphName: FBXTree.Objects.Deformer[ deformerID ].attrName,
-
-								};
-
-								layerCurveNodes[ i ] = node;
-
-							}
-
-							layerCurveNodes[ i ][ curveNode.attr ] = curveNode;
-
 						}
+
+
 
 					}
 
@@ -2543,7 +2478,7 @@
 
 	}
 
-	// take raw animation clips and turn them into three.js animation clips
+	// take raw animation data from parseAnimations and connect it up to the loaded models
 	function addAnimations( FBXTree, connections, sceneGraph ) {
 
 		sceneGraph.animations = [];
@@ -2552,11 +2487,12 @@
 
 		if ( rawClips === undefined ) return;
 
+
 		for ( var key in rawClips ) {
 
 			var rawClip = rawClips[ key ];
 
-			var clip = addClip( rawClip, sceneGraph );
+			var clip = addClip( rawClip );
 
 			sceneGraph.animations.push( clip );
 
@@ -2564,13 +2500,13 @@
 
 	}
 
-	function addClip( rawClip, sceneGraph ) {
+	function addClip( rawClip ) {
 
 		var tracks = [];
 
 		rawClip.layer.forEach( function ( rawTracks ) {
 
-			tracks = tracks.concat( generateTracks( rawTracks, sceneGraph ) );
+			tracks = tracks.concat( generateTracks( rawTracks ) );
 
 		} );
 
@@ -2578,7 +2514,7 @@
 
 	}
 
-	function generateTracks( rawTracks, sceneGraph ) {
+	function generateTracks( rawTracks ) {
 
 		var tracks = [];
 
@@ -2600,12 +2536,6 @@
 
 			var scaleTrack = generateVectorTrack( rawTracks.modelName, rawTracks.S.curves, rawTracks.initialScale, 'scale' );
 			if ( scaleTrack !== undefined ) tracks.push( scaleTrack );
-
-		}
-
-		if ( rawTracks.DeformPercent !== undefined ) {
-			var morphTrack = generateMorphTrack( rawTracks, sceneGraph );
-			if ( morphTrack !== undefined ) tracks.push( morphTrack );
 
 		}
 
@@ -2674,21 +2604,6 @@
 		}
 
 		return new THREE.QuaternionKeyframeTrack( modelName + '.quaternion', times, quaternionValues );
-
-	}
-
-	function generateMorphTrack( rawTracks, sceneGraph ) {
-
-		var curves = rawTracks.DeformPercent.curves.morph;
-		var values = curves.values.map( function ( val ) {
-
-			return val / 100;
-
-		} );
-
-		var morphNum = sceneGraph.getObjectByName( rawTracks.modelName ).morphTargetDictionary[ rawTracks.morphName ];
-
-		return new THREE.NumberKeyframeTrack( rawTracks.modelName + '.morphTargetInfluences[' + morphNum + ']', curves.times, values );
 
 	}
 

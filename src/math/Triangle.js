@@ -1,4 +1,6 @@
 import { Vector3 } from './Vector3.js';
+import { Line3 } from './Line3.js';
+import { Plane } from './Plane.js';
 
 /**
  * @author bhouston / http://clara.io
@@ -216,14 +218,12 @@ Object.assign( Triangle.prototype, {
 
 	closestPointToPoint: function () {
 
-		var vab = new Vector3();
-		var vac = new Vector3();
-		var vbc = new Vector3();
-		var vap = new Vector3();
-		var vbp = new Vector3();
-		var vcp = new Vector3();
+		var plane = new Plane();
+		var edgeList = [ new Line3(), new Line3(), new Line3() ];
+		var projectedPoint = new Vector3();
+		var closestPoint = new Vector3();
 
-		return function closestPointToPoint( p, target ) {
+		return function closestPointToPoint( point, target ) {
 
 			if ( target === undefined ) {
 
@@ -232,81 +232,48 @@ Object.assign( Triangle.prototype, {
 
 			}
 
-			var a = this.a, b = this.b, c = this.c;
-			var v, w;
+			var minDistance = Infinity;
 
-			// algorithm thanks to Real-Time Collision Detection by Christer Ericson,
-			// published by Morgan Kaufmann Publishers, (c) 2005 Elsevier Inc.,
-			// under the accompanying license; see chapter 5.1.5 for detailed explanation.
-			// basically, we're distinguishing which of the voronoi regions of the triangle
-			// the point lies in with the minimum amount of redundant computation.
+			// project the point onto the plane of the triangle
 
-			vab.subVectors( b, a );
-			vac.subVectors( c, a );
-			vap.subVectors( p, a );
-			var d1 = vab.dot( vap );
-			var d2 = vac.dot( vap );
-			if ( d1 <= 0 && d2 <= 0 ) {
+			plane.setFromCoplanarPoints( this.a, this.b, this.c );
+			plane.projectPoint( point, projectedPoint );
 
-				// vertex region of A; barycentric coords (1, 0, 0)
-				return target.copy( a );
+			// check if the projection lies within the triangle
 
-			}
+			if ( this.containsPoint( projectedPoint ) === true ) {
 
-			vbp.subVectors( p, b );
-			var d3 = vab.dot( vbp );
-			var d4 = vac.dot( vbp );
-			if ( d3 >= 0 && d4 <= d3 ) {
+				// if so, this is the closest point
 
-				// vertex region of B; barycentric coords (0, 1, 0)
-				return target.copy( b );
+				target.copy( projectedPoint );
 
-			}
+			} else {
 
-			var vc = d1 * d4 - d3 * d2;
-			if ( vc <= 0 && d1 >= 0 && d3 <= 0 ) {
+				// if not, the point falls outside the triangle. the target is the closest point to the triangle's edges or vertices
 
-				v = d1 / ( d1 - d3 );
-				// edge region of AB; barycentric coords (1-v, v, 0)
-				return target.copy( a ).addScaledVector( vab, v );
+				edgeList[ 0 ].set( this.a, this.b );
+				edgeList[ 1 ].set( this.b, this.c );
+				edgeList[ 2 ].set( this.c, this.a );
 
-			}
+				for ( var i = 0; i < edgeList.length; i ++ ) {
 
-			vcp.subVectors( p, c );
-			var d5 = vab.dot( vcp );
-			var d6 = vac.dot( vcp );
-			if ( d6 >= 0 && d5 <= d6 ) {
+					edgeList[ i ].closestPointToPoint( projectedPoint, true, closestPoint );
 
-				// vertex region of C; barycentric coords (0, 0, 1)
-				return target.copy( c );
+					var distance = projectedPoint.distanceToSquared( closestPoint );
+
+					if ( distance < minDistance ) {
+
+						minDistance = distance;
+
+						target.copy( closestPoint );
+
+					}
+
+				}
 
 			}
 
-			var vb = d5 * d2 - d1 * d6;
-			if ( vb <= 0 && d2 >= 0 && d6 <= 0 ) {
-
-				w = d2 / ( d2 - d6 );
-				// edge region of AC; barycentric coords (1-w, 0, w)
-				return target.copy( a ).addScaledVector( vac, w );
-
-			}
-
-			var va = d3 * d6 - d5 * d4;
-			if ( va <= 0 && ( d4 - d3 ) >= 0 && ( d5 - d6 ) >= 0 ) {
-
-				vbc.subVectors( c, b );
-				w = ( d4 - d3 ) / ( ( d4 - d3 ) + ( d5 - d6 ) );
-				// edge region of BC; barycentric coords (0, 1-w, w)
-				return target.copy( b ).addScaledVector( vbc, w ); // edge region of BC
-
-			}
-
-			// face region
-			var denom = 1 / ( va + vb + vc );
-			// u = va * denom
-			v = vb * denom;
-			w = vc * denom;
-			return target.copy( a ).addScaledVector( vab, v ).addScaledVector( vac, w );
+			return target;
 
 		};
 
